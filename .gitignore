@@ -1,0 +1,19 @@
+# Environment
+.env
+venv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Thanks mac
+.DS_Store
+
+# Code editors
+.idea
+.store
+.vscode
+
+# Local items with scratch in the name
+*scratch*
