@@ -4,5 +4,6 @@ asyncio
 aiohttp
 slack_sdk
 splunk-sdk
-bs4
+beautifulsoup4
 lxml
+brotli
