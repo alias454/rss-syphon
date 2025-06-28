@@ -1,5 +1,25 @@
 import os
 
+
+def str_to_bool(value):
+    """
+    Convert a string to boolean.
+    Returns True for 'true', '1', 'yes', 'on' (case insensitive).
+    Returns False for 'false', '0', 'no', 'off', or any other value.
+    """
+    val = str(value).strip().lower()
+    true_values = {"true", "1", "yes", "on"}
+    false_values = {"false", "0", "no", "off"}
+
+    if val in true_values:
+        return True
+    elif val in false_values:
+        return False
+    else:
+        # Default fallback
+        return False
+
+
 # Configurations for RSS-Syphon
 
 # Set default logging level and format
@@ -10,7 +30,7 @@ log_format = os.getenv("LOG_FORMAT", "%(levelname)s:%(name)s: %(message)s")
 
 # Set Slack Configuration parameters
 slack_params_dict = {
-    "slack_enabled": os.getenv("SLACK_ENABLED", False),
+    "slack_enabled": str_to_bool(os.getenv("SLACK_ENABLED", "false")),
     "slack_token": os.getenv("SLACK_TOKEN"),
     "channels": {
         "cve": os.getenv("SLACK_CHANNEL_CVE"),
@@ -21,7 +41,7 @@ slack_params_dict = {
 
 # Set Zendesk Configuration parameters
 zendesk_params_dict = {
-    "zendesk_enabled": os.getenv("ZENDESK_ENABLED", False),
+    "zendesk_enabled": str_to_bool(os.getenv("ZENDESK_ENABLED", "false")),
     "zendesk_token": os.getenv("ZENDESK_TOKEN"),
     "base_url": os.getenv("ZENDESK_BASE_URL"),
     "email": os.getenv("ZENDESK_EMAIL"),
@@ -30,7 +50,7 @@ zendesk_params_dict = {
 
 # Set Notion Configuration parameters
 notion_params_dict = {
-    "notion_enabled": os.getenv("NOTION_ENABLED", False),
+    "notion_enabled": str_to_bool(os.getenv("NOTION_ENABLED", "false")),
     "notion_token": os.getenv("NOTION_TOKEN"),
     "databases": {
         "cve": os.getenv("NOTION_DB_CVE"),
@@ -57,7 +77,7 @@ search index=tenable severity=informational plugin_id=22869 output=*
 
 # Set Splunk Configuration parameters
 splunk_params_dict = {
-    "splunk_enabled": os.getenv("SPLUNK_ENABLED", False),
+    "splunk_enabled": str_to_bool(os.getenv("SPLUNK_ENABLED", "false")),
     "splunk_api_user": os.getenv("SPLUNK_API_USER"),
     "splunk_api_pass": os.getenv("SPLUNK_API_PASS"),
     "splunk_host": {
