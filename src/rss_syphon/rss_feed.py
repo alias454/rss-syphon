@@ -6,7 +6,7 @@ import asyncio
 import aiohttp
 from aiohttp import ClientConnectorError
 from time import mktime
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Requires adding `feedparser` to the requirements.txt file
 # Requires adding `asyncio` to the requirements.txt file
@@ -42,23 +42,31 @@ async def fetch(sem, session, feed_name, feed_url):
             return msg, feed_name
 
 
-async def fetch_all(feeds_list, loop):
+async def fetch_all(feeds_list):
     """
     Takes a list of urls and manages the fetch calls using async functions
 
     :param feeds_list: List of RSS feed data including name and URL
-    :param loop: Loop object for async tasks
     :return: Result values from fetch jobs
     """
-    # Add a user agent string to handle picky feed sites
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:103.0) Gecko/20100101 Firefox/103.0'
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/114.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
     }
 
     sem = asyncio.Semaphore(4)
-    async with aiohttp.ClientSession(loop=loop, headers=headers) as session:
+    async with aiohttp.ClientSession(headers=headers) as session:
         fetch_res = await asyncio.gather(
-            *[fetch(sem, session, feed["name"], feed["url"]) for feed in feeds_list], return_exceptions=True
+            *[fetch(sem, session, feed["name"], feed["url"]) for feed in feeds_list],
+            return_exceptions=True
         )
         return fetch_res
 
@@ -70,8 +78,7 @@ def fetch_feed_results(feeds_list):
     :param feeds_list: List of RSS feed data including name and URL
     :return: Results from fetch_all
     """
-    loop = asyncio.get_event_loop()
-    fetched_res = loop.run_until_complete(fetch_all(tuple(feeds_list), loop))
+    fetched_res = asyncio.run(fetch_all(tuple(feeds_list)))
 
     return fetched_res
 
@@ -107,35 +114,49 @@ def process_feeds(feed_results, feeds_list):
 
     processed_results = []
     for result in feed_results:
-        if type(result) is ClientConnectorError:
+        # Defensive: handle if result is an exception type, string, or tuple instead of expected
+        if isinstance(result, ClientConnectorError):
             # Lookup name from feeds list when client exception
-            parsed_item = re.search(regex, str(result)).group()
-            match, port = parsed_item.split(':', 1)
+            match = None
+            port = None
+            try:
+                parsed_item = re.search(regex, str(result))
+                if parsed_item:
+                    parsed_item = parsed_item.group()
+                    match, port = parsed_item.split(':', 1)
+            except Exception as e:
+                logger.warning(f"Regex parse failed on exception string: {e}")
+
             for feed in feeds_list:
-                if any([match in url.lower() for key, url in feed.items()]):
+                # Defensive: ensure keys exist and values are strings before searching
+                if any(match and isinstance(url, str) and match in url.lower() for key, url in feed.items()):
                     items = {
                         "entries": None,
                         "message": {
-                            "feed_name": feed["name"],
+                            "feed_name": feed.get("name", "unknown"),
                             "host_match": match,
                             "port": port,
                             "error": str(result)
                         }
                     }
-                    items_list = [items, feed["name"]]
+                    items_list = [items, feed.get("name", "unknown")]
                     processed_results.append(tuple(items_list))
 
                     # Log the exception result as a warning
-                    msg = f"Feed name {feed['name']} : {result}"
+                    msg = f"Feed name {feed.get('name', 'unknown')} : {result}"
                     logger.warning(msg)
                     break
-        else:
+        elif isinstance(result, tuple) and len(result) == 2:
             processed_results.append(result)
+        else:
+            logger.warning(f"Unexpected feed result type: {type(result)}")
+            # Append a tuple with empty entries and unknown feed name for consistency
+            processed_results.append(({"entries": None, "message": {"error": "Unexpected result type"}}, "unknown"))
 
     return processed_results
 
 
-def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=False):
+def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=False, lookback_days=0):
     """
     Prepare returned RSS feed posts by checking if entries exist and then
     checking the datetime values of properly formatted RSS feed data
@@ -144,6 +165,7 @@ def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=Fal
     :param keywords_list: List of values to search articles for
     :param ignored_list: List of values to ignore
     :param hard_ignore: Ignore any occurrence of an ignored keyword
+    :param lookback_days: Defaults to today: Set a lookback for old article retrival on new deployments
     :return: Lists of matches, feed errors, and old articles
     """
     # Hold feed information
@@ -157,27 +179,33 @@ def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=Fal
     }
 
     for rss_feed, rss_feed_name in rss_feeds:
+        # Defensive: check types before processing
+        if not isinstance(rss_feed, dict):
+            logger.warning(f"Unexpected feed result type: {type(rss_feed)} for feed {rss_feed_name}")
+            feed_errors.append(rss_feed_name)
+            continue
+
         # Feed's url changed or the remote host is offline
         if "Error: API call Failed" in str(rss_feed):
             feed_errors.append(rss_feed_name)
             continue
-        elif rss_feed["entries"] is None:
+        elif rss_feed.get("entries") is None:
             feed_errors.append(rss_feed_name)
         else:
             # Iterate through feed articles
-            for item in rss_feed["entries"]:
+            for item in rss_feed.get("entries", []):
                 try:
                     item_date = None
                     # Grab timestamp and compare to today's timestamp
-                    if "published_parsed" in item.keys():
+                    if "published_parsed" in item:
                         item_date = datetime.fromtimestamp(mktime(item["published_parsed"]))
-                    elif "updated_parsed" in item.keys():
+                    elif "updated_parsed" in item:
                         item_date = datetime.fromtimestamp(mktime(item["updated_parsed"]))
                     else:
                         date_errors.append(rss_feed_name)
 
                     if item_date is not None:
-                        if str(datetime.now().date()) == str(item_date.date()):
+                        if item_date.date() >= (datetime.now().date() - timedelta(days=lookback_days)):
                             # If we get here, it's an article from today so run a keyword search
                             kw_res = search_keywords(item, keywords_list, ignored_list, rss_feed_name, hard_ignore)
 
@@ -191,13 +219,10 @@ def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=Fal
                             # Set count for keyword hits
                             if kw_res["keywords"]:
                                 for kw in kw_res["keywords"]:
-                                    if kw not in matched["keywords"]:
-                                        matched["keywords"][kw] = kw_res["keywords"][kw]
-                                    else:
-                                        matched["keywords"][kw] += kw_res["keywords"][kw]
+                                    matched["keywords"][kw] = matched["keywords"].get(kw, 0) + kw_res["keywords"][kw]
                         else:
                             # Otherwise, the article is probably older than today
-                            old_articles.append(f"{item_date} - {rss_feed_name} - {item['title']}")
+                            old_articles.append(f"{item_date} - {rss_feed_name} - {item.get('title', 'No Title')}")
 
                 except KeyError as e:
                     logger.error(e)
@@ -215,7 +240,8 @@ def check_ignored_keywords(rss_post, ignore_list):
     :return: True if match else False
     """
     for ignored in ignore_list:
-        if re.search(f"\\b{ignored}\\b", str(rss_post), re.IGNORECASE):
+        escaped = re.escape(ignored)
+        if re.search(f"\\b{escaped}\\b", str(rss_post), re.IGNORECASE):
             return True
     return False
 
@@ -243,29 +269,27 @@ def search_keywords(rss_post, keywords_list, ignored_list, rss_feed_name, hard_i
 
     for keyword in keywords:
         # Don't match if any ignored word is found
-        if hard_ignore:
-            if check_ignored_keywords(rss_post, ignored_list):
-                break
+        if hard_ignore and check_ignored_keywords(rss_post, ignored_list):
+            break
+
+        # Escape any special regex chars to avoid regex errors
+        escaped_keyword = re.escape(keyword)
 
         # Check entire RSS post for full word keyword match
-        keyword = keyword.replace("+", "\\+")
-        if re.search(f"\\b{keyword}\\b", str(rss_post), re.IGNORECASE):
+        if re.search(f"\\b{escaped_keyword}\\b", str(rss_post), re.IGNORECASE):
             # Check prior keyword match or not and increment count
-            if keyword not in matched["keywords"]:
-                matched["keywords"][keyword] = 1
-            else:
-                matched["keywords"][keyword] += 1
+            matched["keywords"][keyword] = matched["keywords"].get(keyword, 0) + 1
 
             # Add origin of RSS feed name
             rss_post['rss_feed_name'] = rss_feed_name
             rss_post["keywords"] = str(list(matched["keywords"].keys())).strip("[]")
 
             # Skip if post already added to the matched list and continue
-            post_title = rss_post["title"].lower()
-            if not any([post_title in title.lower() for title in matched["titles"]]):
+            post_title = rss_post.get("title", "").lower()
+            if not any(post_title in title.lower() for title in matched["titles"]):
                 msg = f"Unique Match: Keyword {keyword} found in post {post_title}"
                 logger.debug(msg)
-                rss_post["md5"] = hashlib.md5(str(post_title).encode('utf-8')).hexdigest()
+                rss_post["md5"] = hashlib.md5(post_title.encode('utf-8')).hexdigest()
 
                 matched["titles"].append(post_title)
                 matched["articles"].append(rss_post)
@@ -281,10 +305,15 @@ def check_last_modified(date, days=90):
     :param days: Days to verify delta for
     :return: None or date
     """
-    last_modified = datetime.strptime(date, "%Y-%m-%d")
+    try:
+        last_modified = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        logger.warning(f"Invalid date format: {date}")
+        return None
+
     delta = datetime.now() - last_modified
 
-    if (delta.total_seconds() / 60 / 60 / 24) > days:
+    if delta.days > days:
         return date
 
     return None
