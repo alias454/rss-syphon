@@ -13,9 +13,10 @@ RSS-Syphon also supports getting dynamic keywords from a Splunk search if needed
 - Fetch and parse multiple RSS feeds asynchronously  
 - Keyword-based filtering with support for ignored terms  
 - Lookback support to process older articles on new deployments  
-- Integration with Slack, Notion, Zendesk outputs  
+- Integration with Slack, Notion, and Zendesk outputs  
 - Dynamic keyword ingestion from Splunk queries  
-- Robust error handling and logging 
+- Robust error handling and logging  
+- Modular outputs expansion supported
 
 ## Requirements
 

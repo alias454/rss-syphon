@@ -18,6 +18,8 @@ def init_notion_client(api_token, api_version):
     :param api_version: Notion API Version
     :return: Session Object
     """
+    logger.debug("Initializing Notion client session.")
+
     # Setup session
     session_obj = requests.Session()
 
@@ -30,6 +32,7 @@ def init_notion_client(api_token, api_version):
     }
     session_obj.headers.update(headers)
 
+    logger.debug("Notion client session headers set.")
     return session_obj
 
 
@@ -44,6 +47,8 @@ def check_existing_posts(session, url, db_id):
     """
     # Get pages from DB using database ID
     query_url = urllib.parse.urljoin(url, f"databases/{db_id}/query")
+    logger.debug(f"Querying Notion DB for existing posts at URL: {query_url}")
+
     res = session.post(query_url)
 
     # Database queries return 100 items per page
@@ -57,10 +62,12 @@ def check_existing_posts(session, url, db_id):
             if "MD5_Hash" in row["properties"]:
                 # Get MD5 values if value exists
                 if row["properties"]["MD5_Hash"]["rich_text"]:
-                    md5_match.append(row["properties"]["MD5_Hash"]["rich_text"][0]["plain_text"])
+                    md5_val = row["properties"]["MD5_Hash"]["rich_text"][0]["plain_text"]
+                    md5_match.append(md5_val)
+                    logger.debug(f"Found MD5 hash in DB: {md5_val}")
 
+        logger.info(f"Found {len(md5_match)} existing MD5 hashes in Notion DB {db_id}.")
         return md5_match
-
     else:
         msg = f"Error: API query call Failed {res.status_code} : {res.reason}"
         logger.error(msg)
@@ -70,20 +77,23 @@ def post_errors(session, url, db_id, messages):
     """
     This requires the following Notion DB configuration
 
-      "Property Name": "Property Type"
-      =================================
-      "Name": "title",
-      "Summary": "rich_text",
-      "Submitted": "Current time"
+    Property Name | Property Type
+    ------------- | --------------
+    Name          | title
+    Summary       | rich_text
+    Submitted     | Current time
 
     :param session: Session Object
     :param url: Base url to use for requests
     :param db_id: ID of the database to operate on
     :param messages: Message body content
     """
+    logger.debug(f"Posting {len(messages)} error messages to Notion database {db_id}.")
+
     for message in messages:
         if message:
-            pass
+            logger.debug(f"Preparing error message payload for '{message.get('title', 'No Title')}'.")
+
             # Create a new page in the database
             payload = {
                 "parent": {
@@ -104,13 +114,14 @@ def post_errors(session, url, db_id, messages):
             }
 
             create_url = urllib.parse.urljoin(url, "pages")
+            logger.debug(f"Posting error message to Notion API endpoint: {create_url}")
             result = session.post(create_url, data=json.dumps(payload))
 
             if result.status_code == 200:
-                msg = f"Success: Created a new error message"
+                msg = f"Success: Created a new error message for '{message.get('title', 'No Title')}'."
                 logger.info(msg)
             else:
-                msg = f"Error: API call Failed {result.content} {result.status_code} : {result.reason}"
+                msg = f"Error: API call failed ({result.status_code} {result.reason}): {result.content}"
                 logger.error(msg)
 
 
@@ -118,25 +129,29 @@ def post_message(session, url, db_id, messages):
     """
     This requires the following Notion DB configuration
 
-      "Property Name": "Property Type"
-      =================================
-      "Name": "title",
-      "MD5_Hash": "rich_text",
-      "Feed": "rich_text",
-      "Type": "rich_text",
-      "Keywords": "multi_select",
-      "Article_Link": "url",
-      "Summary": "rich_text",
-      "CVE_Link": "url"
-      "Submitted": "Current time"
+    Property Name | Property Type
+    ------------- | --------------
+    Name          | title
+    MD5_Hash      | rich_text
+    Feed          | rich_text
+    Type          | rich_text
+    Keywords      | multi_select
+    Article_Link  | url
+    Summary       | rich_text
+    CVE_Link      | url
+    Submitted     | Current time
 
     :param session: Session Object
     :param url: Base url to use for requests
     :param db_id: ID of the database to operate on
     :param messages: Message body content
     """
+    logger.debug(f"Posting {len(messages)} messages to Notion database {db_id}.")
+
     for message in messages:
         if message:
+            logger.debug(f"Preparing payload for article '{message.get('title', 'Untitled')}'.")
+
             # Create a new page in the database
             payload = {
                 "parent": {
@@ -181,6 +196,7 @@ def post_message(session, url, db_id, messages):
                     }
                 }
                 payload["properties"].update(keywords)
+                logger.debug(f"Added keywords: {kw_list}")
 
             # When creating items for CVE jobs add Summary
             if "summary" in message:
@@ -192,6 +208,7 @@ def post_message(session, url, db_id, messages):
                     }
                 }
                 payload["properties"].update(summary)
+                logger.debug("Added summary field to payload.")
 
             # When creating items for CVE jobs add CVE_Link
             if "cve" in message:
@@ -201,15 +218,18 @@ def post_message(session, url, db_id, messages):
                     }
                 }
                 payload["properties"].update(cve_link)
+                logger.debug("Added CVE link to payload.")
 
             create_url = urllib.parse.urljoin(url, "pages")
+            logger.debug(f"Posting to Notion API: {create_url}")
+
             result = session.post(create_url, data=json.dumps(payload))
 
             if result.status_code == 200:
-                msg = f"Success: Created a new entry for {message.get('feed', '')}"
+                msg = f"Success: Created a new entry for '{message.get('title', 'Untitled')}' in Notion."
                 logger.info(msg)
             else:
-                msg = f"Error: API call Failed {result.content} {result.status_code} : {result.reason}"
+                msg = f"Error: API call failed ({result.status_code} {result.reason}): {result.content}"
                 logger.error(msg)
 
 
@@ -221,8 +241,11 @@ def clean_html(input_text):
     :param input_text: Text to clean
     :return: Cleaned output
     """
+    logger.debug("Cleaning HTML from input text.")
     text = BeautifulSoup(input_text, "lxml").get_text(separator="\n")
-    return re.sub('\n\n', '\n', text)
+    cleaned_text = re.sub('\n\n', '\n', text)
+    logger.debug("HTML cleaning complete.")
+    return cleaned_text
 
 
 def build_results_message(feed_results, rss_found_already, rss_type):
@@ -237,9 +260,12 @@ def build_results_message(feed_results, rss_found_already, rss_type):
     md5_stored = []
     return_list = []
 
+    logger.debug(f"Building results message for RSS type '{rss_type}'. Found {len(feed_results.get('articles', []))} articles to process.")
+
     if feed_results["articles"]:
         for rss_post in feed_results["articles"]:
             if rss_post['md5'] in rss_found_already:
+                logger.debug(f"Skipping already-posted article '{rss_post['title']}' (MD5: {rss_post['md5']}).")
                 continue
             elif rss_post['md5'] not in md5_stored:
                 # Keep track of articles to return using md5
@@ -251,6 +277,7 @@ def build_results_message(feed_results, rss_found_already, rss_type):
                 # Publishing News
                 if rss_type == "news":
                     if not any(x in post_title for x in ["cve", "vulnerability"]):
+                        logger.debug(f"Adding news article '{rss_post['title']}' to results.")
                         message = {
                             "title": rss_post['title'],
                             "link": rss_post['link'],
@@ -269,6 +296,7 @@ def build_results_message(feed_results, rss_found_already, rss_type):
                 # Publishing CVEs
                 elif rss_type == "cve":
                     if ("cve" in post_title) or ("cve" in post_summary):
+                        logger.debug(f"Adding CVE article '{rss_post['title']}' to results.")
                         # Parse for CVEs
                         cve_list = []
                         cve_url_list = []
@@ -310,14 +338,15 @@ def build_results_message(feed_results, rss_found_already, rss_type):
 
                         return_list.append(message)
 
+    logger.info(f"Built {len(return_list)} messages for '{rss_type}'.")
     return return_list
 
 
-def send_message(job_type, message_params, matched, errors, check_stale_keywords=None):
+def dispatch(run_type, message_params, matched, errors, check_stale_keywords=None):
     """
     Send prepared RSS feed results to a Notion DB
 
-    :param job_type: CVE or NEWs job type
+    :param run_type: CVE or NEWs job type
     :param message_params: Dictionary of message config values
     :param matched: Keyword matched RSS articles
     :param errors: List of feeds that have an error
@@ -335,20 +364,28 @@ def send_message(job_type, message_params, matched, errors, check_stale_keywords
 
     # Check if api_token is set
     if api_token:
+        logger.info(f"Dispatching '{run_type}' results to Notion.")
+
         # Init Notion client session
         session = init_notion_client(api_token, api_version)
+        logger.debug("Initialized Notion client session.")
 
         # Check for existing RSS posts in DB
-        rss_found = check_existing_posts(session, base_url, db_id[job_type])
+        rss_found = check_existing_posts(session, base_url, db_id[run_type])
+        logger.debug(f"Retrieved {len(rss_found)} existing posts from Notion database '{db_id[run_type]}'.")
 
         # Build the message that will be sent
-        build_results = build_results_message(matched, rss_found, job_type)
+        build_results = build_results_message(matched, rss_found, run_type)
         if build_results:
-            post_message(session, base_url, db_id[job_type], build_results)
+            logger.info(f"Posting {len(build_results)} new items to Notion database '{db_id[run_type]}'.")
+            post_message(session, base_url, db_id[run_type], build_results)
+        else:
+            logger.info("No new items to post to Notion.")
 
         # Feeds that have changes or are offline
         error_messages = []
         if len(errors) > 0:
+            logger.warning(f"{len(errors)} feeds reported errors.")
             for feed in errors:
                 message = {
                     "title": feed,
@@ -358,6 +395,7 @@ def send_message(job_type, message_params, matched, errors, check_stale_keywords
 
         # Keywords need to be updated
         if check_stale_keywords is not None:
+            logger.warning("Keyword list is stale and needs updating.")
             message = {
                 "title": "keyword",
                 "summary": f"Keyword list was last updated on: {str(check_stale_keywords)}"
@@ -365,7 +403,10 @@ def send_message(job_type, message_params, matched, errors, check_stale_keywords
             error_messages.append(message)
 
         if error_messages:
+            logger.info(f"Posting {len(error_messages)} error/stale keyword notifications to Notion.")
             post_errors(session, base_url, db_id["error"], error_messages)
+        else:
+            logger.debug("No error messages to post to Notion.")
     else:
-        msg = f"Warning: No Notion token set. No {job_type} items will be posted to Notion."
+        msg = f"Warning: No Notion token set. No '{run_type}' items will be posted to Notion."
         logger.warning(msg)

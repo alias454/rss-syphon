@@ -15,6 +15,7 @@ def get_groups(base_url, api_token):
     :return: list of groups
     """
     if api_token is not None:
+        logger.info("Fetching Zendesk groups list.")
         headers = {
             "Accept": "application/json",
             "Authorization": "Bearer " + api_token
@@ -40,7 +41,10 @@ def get_groups(base_url, api_token):
                 full_url = group_data.get("next_page")
             else:
                 msg = f"Error: API call Failed {res.status_code} : {res.reason}"
+                logger.error(msg)
                 raise ValueError(msg)
+
+        logger.info(f"Fetched {len(groups)} groups from Zendesk.")
         return groups
     else:
         msg = "Error: Missing API key for Zendesk"
@@ -67,6 +71,7 @@ def create_ticket(base_url, email, subject, body, group_id, api_token):
     :return: Zendesk API response or error message
     """
     if api_token is not None:
+        logger.info(f"Creating Zendesk ticket with subject: {subject}")
         payload = {
             "priority": "normal",
             "group_id": group_id,
@@ -79,15 +84,19 @@ def create_ticket(base_url, email, subject, body, group_id, api_token):
         }
 
         full_url = f"{base_url}/api/v2/tickets.json"
-        res = requests.post(full_url, json=payload, auth=(f"{email}/token", api_token))
-        if res.status_code in [200, 201]:
-            msg = f"Success: Message sent {res.status_code} : {res.reason}"
-            logger.info(msg)
-            return msg
-        else:
-            msg = f"Error: API call Failed {res.status_code} : {res.reason}"
-            logger.error(msg)
-            raise ValueError(msg)
+        try:
+            res = requests.post(full_url, json=payload, auth=(f"{email}/token", api_token))
+            if res.status_code in [200, 201]:
+                msg = f"Success: Message sent {res.status_code} : {res.reason}"
+                logger.info(msg)
+                return msg
+            else:
+                msg = f"Error: API call Failed {res.status_code} : {res.reason}"
+                logger.error(msg)
+                raise ValueError(msg)
+        except Exception as e:
+            logger.error(f"Exception occurred while creating Zendesk ticket: {e}")
+            raise
     else:
         msg = "Error: Missing API key for Zendesk"
         logger.error(msg)
@@ -103,9 +112,11 @@ def build_results_message(feed_results, feed_error_details, update_keywords=None
     :param update_keywords: Pass in a date string like 2022-03-03
     :return: Message body content
     """
+    logger.debug("Building results message for dispatch.")
     res = ""
 
     if update_keywords is not None:
+        logger.info(f"Keywords list is stale, last updated on {update_keywords}. Adding update notice.")
         res += "-------------------------------------------------------------------------------------------------\n"
         res += " [ ! ] KEYWORD LIST ACTION REQUIRED [ ! ]\n"
         res += "-------------------------------------------------------------------------------------------------\n"
@@ -119,6 +130,7 @@ def build_results_message(feed_results, feed_error_details, update_keywords=None
 
     # Check for feeds that have changes
     if len(feed_error_details) > 0:
+        logger.warning(f"Feeds with errors found: {feed_error_details}. Adding feed error notice.")
         res += "-------------------------------------------------------------------------------------------------\n"
         res += " [ ! ] FEED ACTION REQUIRED [ ! ]\n"
         res += "-------------------------------------------------------------------------------------------------\n"
@@ -140,22 +152,25 @@ def build_results_message(feed_results, feed_error_details, update_keywords=None
         res += "Feed: " + rss_post["rss_feed_name"] + "\n\n"
 
     if feed_results["keywords"]:
+        logger.debug("Including matched keywords and counts in message.")
         res += "--------------------------------------------------------------------------------------------------\n"
         res += " Matched keywords found in listed articles and the counts for each\n"
         res += " Please remove non-relevant keywords in RSS data file and document changes in this ticket\n\n"
         res += " " + str(feed_results["keywords"]) + "\n\n"
         res += "--------------------------------------------------------------------------------------------------\n"
     else:
+        logger.debug("No keyword matches found to include in message.")
         res += "No Keyword Matches"
 
+    logger.debug("Results message build complete.")
     return res
 
 
-def send_message(job_type, message_params, matched, errors, check_stale_keywords=None):
+def dispatch(run_type, message_params, matched, errors, check_stale_keywords=None):
     """
     Send prepared RSS feed results to a Zendesk instance
 
-    :param job_type: CVE or NEWs job type
+    :param run_type: CVE or NEWs job type
     :param message_params: Dictionary of message config values
     :param matched: Keyword matched RSS articles
     :param errors: List of feeds that have an error
@@ -170,6 +185,7 @@ def send_message(job_type, message_params, matched, errors, check_stale_keywords
 
     # Check if api_token is set
     if api_token:
+        logger.info(f"Dispatching '{run_type}' data to Zendesk.")
         # Build the message that will be sent
         message_body = build_results_message(matched, errors, check_stale_keywords)
         if message_body:
@@ -181,6 +197,9 @@ def send_message(job_type, message_params, matched, errors, check_stale_keywords
 
             # Create an issue using prepared feed results
             create_ticket(base_url, email, subject, message_body, group_id, api_token)
+            logger.info(f"Zendesk ticket created for '{run_type}'.")
+        else:
+            logger.info(f"No message body generated for '{run_type}', skipping Zendesk ticket creation.")
     else:
-        msg = f"Warning: No Zendesk token set. No {job_type} items will be posted to Zendesk."
+        msg = f"Warning: No Zendesk token set. No '{run_type}' items will be posted to Zendesk."
         logger.warning(msg)
