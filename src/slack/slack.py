@@ -230,11 +230,11 @@ def build_results_message(feed_results, rss_found_already, rss_type):
     return res
 
 
-def send_message(job_type, message_params, matched, errors, check_stale_keywords=None):
+def dispatch(run_type, message_params, matched, errors, check_stale_keywords=None):
     """
     Send prepared RSS feed results to Slack
 
-    :param job_type: CVE or NEWs job type
+    :param run_type: CVE or NEWs job type
     :param message_params: Dictionary of message config values
     :param matched: Keyword matched RSS articles
     :param errors: List of feeds that have an error
@@ -254,12 +254,12 @@ def send_message(job_type, message_params, matched, errors, check_stale_keywords
         slack_client = init_slack_client(slack_token)
 
         # Pull RSS that was found already in channel
-        rss_found = read_channel(slack_client, slack_channel[job_type], job_type)
+        rss_found = read_channel(slack_client, slack_channel[run_type], run_type)
 
         # Build the message that will be sent
-        message_body = build_results_message(matched, rss_found, job_type)
+        message_body = build_results_message(matched, rss_found, run_type)
         if message_body:
-            post_message(slack_client, slack_channel[job_type], message_body)
+            post_message(slack_client, slack_channel[run_type], message_body)
 
         # Feeds that have changes or are offline
         error_message_body = ""
@@ -277,5 +277,5 @@ def send_message(job_type, message_params, matched, errors, check_stale_keywords
         if error_message_body:
             post_message(slack_client, slack_channel["error"], error_message_body)
     else:
-        msg = f"Warning: No Slack token set. No {job_type} items will be posted to Slack."
+        msg = f"Warning: No Slack token set. No '{run_type}' items will be posted to Slack."
         logger.warning(msg)

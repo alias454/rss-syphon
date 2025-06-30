@@ -1,16 +1,19 @@
+import asyncio
+import hashlib
 import logging
 import re
 import feedparser
-import hashlib
-import asyncio
 import aiohttp
 from aiohttp import ClientConnectorError
-from time import mktime
 from datetime import datetime, timedelta
+from time import mktime
+
+logger = logging.getLogger(__name__)
 
 # Requires adding `feedparser` to the requirements.txt file
 # Requires adding `asyncio` to the requirements.txt file
 # Requires adding `aiohttp` to the requirements.txt file
+# Requires adding `brotli` to the requirements.txt file
 
 # Set module logger name
 logger = logging.getLogger(__name__)
@@ -26,13 +29,19 @@ async def fetch(sem, session, feed_name, feed_url):
     :param feed_url: URL to use when fetching feed data
     :return: Parsed and cleaned results or error
     """
+    logger.debug(f"Acquiring semaphore and starting fetch for {feed_name}: {feed_url}")
     async with sem, session.get(feed_url) as response:
+        logger.debug(f"Received response for {feed_name} with status {response.status}")
         if response.status == 200:
             data = await response.text()
+            logger.debug(f"Fetched {len(data)} bytes from {feed_name}")
 
             # Strip empty lines from returned data
             stripped = "\n".join([line.rstrip() for line in data.splitlines() if line.strip()])
+            logger.debug(f"Stripped data length for {feed_name}: {len(stripped)}")
+
             rss_page = feedparser.parse(stripped)
+            logger.debug(f"Parsed feed for {feed_name}: {len(rss_page.entries)} entries found")
 
             return rss_page, feed_name
         else:
@@ -42,11 +51,12 @@ async def fetch(sem, session, feed_name, feed_url):
             return msg, feed_name
 
 
-async def fetch_all(feeds_list):
+async def fetch_all(feeds_list, max_concurrent: int = 4):
     """
     Takes a list of urls and manages the fetch calls using async functions
 
     :param feeds_list: List of RSS feed data including name and URL
+    :param max_concurrent: Maximum number of concurrent fetches.
     :return: Result values from fetch jobs
     """
     headers = {
@@ -62,7 +72,9 @@ async def fetch_all(feeds_list):
         "Upgrade-Insecure-Requests": "1",
     }
 
-    sem = asyncio.Semaphore(4)
+    logger.info(f"Fetching feeds from {len(feeds_list)} URLs with max concurrency {max_concurrent}")
+
+    sem = asyncio.Semaphore(max_concurrent)
     async with aiohttp.ClientSession(headers=headers) as session:
         fetch_res = await asyncio.gather(
             *[fetch(sem, session, feed["name"], feed["url"]) for feed in feeds_list],
@@ -143,8 +155,7 @@ def process_feeds(feed_results, feeds_list):
                     processed_results.append(tuple(items_list))
 
                     # Log the exception result as a warning
-                    msg = f"Feed name {feed.get('name', 'unknown')} : {result}"
-                    logger.warning(msg)
+                    logger.warning(f"Feed name {feed.get('name', 'unknown')} : {result}")
                     break
         elif isinstance(result, tuple) and len(result) == 2:
             processed_results.append(result)
@@ -158,15 +169,15 @@ def process_feeds(feed_results, feeds_list):
 
 def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=False, lookback_days=0):
     """
-    Prepare returned RSS feed posts by checking if entries exist and then
-    checking the datetime values of properly formatted RSS feed data
+    Prepare returned RSS feed posts by validating entries, filtering by date,
+    and performing keyword searches.
 
-    :param rss_feeds: Full list of RSS posts to be prepared for message output
-    :param keywords_list: List of values to search articles for
-    :param ignored_list: List of values to ignore
-    :param hard_ignore: Ignore any occurrence of an ignored keyword
-    :param lookback_days: Defaults to today: Set a lookback for old article retrival on new deployments
-    :return: Lists of matches, feed errors, and old articles
+    :param rss_feeds: Iterable of (rss_feed_dict, feed_name) tuples.
+    :param keywords_list: List of keywords to search articles for.
+    :param ignored_list: List of keywords to ignore.
+    :param hard_ignore: If True, ignore any occurrence of an ignored keyword.
+    :param lookback_days: Number of days to look back for articles (0 = only today).
+    :return: Tuple of (matched dict, feed_errors list, date_errors list, old_articles list).
     """
     # Hold feed information
     feed_errors = []
@@ -181,27 +192,33 @@ def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=Fal
     for rss_feed, rss_feed_name in rss_feeds:
         # Defensive: check types before processing
         if not isinstance(rss_feed, dict):
-            logger.warning(f"Unexpected feed result type: {type(rss_feed)} for feed {rss_feed_name}")
+            logger.warning(f"Unexpected feed result type: {type(rss_feed)} for feed '{rss_feed_name}'")
             feed_errors.append(rss_feed_name)
             continue
 
-        # Feed's url changed or the remote host is offline
+        # Check API errors, missing entries, url changes, or remote host being offline
         if "Error: API call Failed" in str(rss_feed):
+            logger.warning(f"API call failed for feed '{rss_feed_name}'")
             feed_errors.append(rss_feed_name)
             continue
         elif rss_feed.get("entries") is None:
+            logger.warning(f"No 'entries' found in feed '{rss_feed_name}'")
             feed_errors.append(rss_feed_name)
+            continue
+
         else:
             # Iterate through feed articles
             for item in rss_feed.get("entries", []):
                 try:
                     item_date = None
-                    # Grab timestamp and compare to today's timestamp
+
+                    # Try to extract the publication date and compare to timestamp
                     if "published_parsed" in item:
                         item_date = datetime.fromtimestamp(mktime(item["published_parsed"]))
                     elif "updated_parsed" in item:
                         item_date = datetime.fromtimestamp(mktime(item["updated_parsed"]))
                     else:
+                        logger.debug(f"No parsed date found for item in feed '{rss_feed_name}'")
                         date_errors.append(rss_feed_name)
 
                     if item_date is not None:
@@ -225,7 +242,7 @@ def prepare_feed_message(rss_feeds, keywords_list, ignored_list, hard_ignore=Fal
                             old_articles.append(f"{item_date} - {rss_feed_name} - {item.get('title', 'No Title')}")
 
                 except KeyError as e:
-                    logger.error(e)
+                    logger.error(f"KeyError while processing feed '{rss_feed_name}': {e}")
                     feed_errors.append(rss_feed_name)
 
     return matched, feed_errors, date_errors, old_articles
