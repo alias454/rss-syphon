@@ -58,6 +58,9 @@ def run_feed_check(feed_type, search_keywords=None, ignored_keywords=None, hard_
         logger.error(f"Feed type '{feed_type}' is not defined in rss_data.rss_feed_list")
         return {}, [], []
 
+    # Validate feeds before processing
+    feed_list = syphon.rss_feed.validate_feed_list(feed_list)
+
     # Process RSS feeds searching for keyword data
     feed_data = syphon.rss_feed.fetch_feed_results(feed_list)
     cleaned_feed = syphon.rss_feed.process_feeds(feed_data, feed_list)

@@ -4,11 +4,12 @@ import logging
 import re
 import feedparser
 import aiohttp
+import socket
+import ipaddress
 from aiohttp import ClientConnectorError
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from time import mktime
-
-logger = logging.getLogger(__name__)
 
 # Requires adding `feedparser` to the requirements.txt file
 # Requires adding `asyncio` to the requirements.txt file
@@ -93,6 +94,121 @@ def fetch_feed_results(feeds_list):
     fetched_res = asyncio.run(fetch_all(tuple(feeds_list)))
 
     return fetched_res
+
+
+def is_valid_url(url):
+    """
+    Validate that a URL is properly formatted and uses http(s).
+
+    This checks:
+      - Scheme is http or https
+      - A hostname is present
+      - No parsing errors
+
+    :param url: String containing the URL to validate
+    :return: True if URL is valid, False otherwise
+    """
+    try:
+        parsed = urlparse(url)
+
+        # Check if scheme is allowed
+        if parsed.scheme not in ("http", "https"):
+            logger.warning(f"Rejected URL due to invalid scheme: {url}")
+            return False
+
+        # Must have a hostname
+        if not parsed.netloc:
+            logger.warning(f"Rejected URL due to missing hostname: {url}")
+            return False
+
+        # Passed all checks
+        return True
+
+    except Exception as e:
+        logger.error(f"Error parsing URL '{url}': {e}")
+        return False
+
+
+def is_safe_hostname(hostname):
+    """
+    Validate that a hostname resolves to a public IP address.
+
+    This checks:
+      - Hostname resolves via DNS
+      - IP is not private, loopback, or link-local
+
+    :param hostname: String hostname (e.g., "example.com")
+    :return: True if hostname is safe, False otherwise
+    """
+    try:
+        # Resolve hostname to IP address
+        ip = socket.gethostbyname(hostname)
+        parsed_ip = ipaddress.ip_address(ip)
+
+        # Block private networks
+        if parsed_ip.is_private:
+            logger.warning(f"Rejected hostname due to private IP: {hostname} -> {ip}")
+            return False
+
+        # Block loopback addresses
+        if parsed_ip.is_loopback:
+            logger.warning(f"Rejected hostname due to loopback IP: {hostname} -> {ip}")
+            return False
+
+        # Block link-local addresses
+        if parsed_ip.is_link_local:
+            logger.warning(f"Rejected hostname due to link-local IP: {hostname} -> {ip}")
+            return False
+
+        # Passed all checks
+        return True
+
+    except socket.gaierror:
+        logger.error(f"DNS resolution failed for hostname: {hostname}")
+        return False
+
+    except Exception as e:
+        logger.error(f"Error validating hostname '{hostname}': {e}")
+        return False
+
+
+def validate_feed_list(feed_list):
+    """
+    Validate all feed URLs in a given feed list dictionary.
+
+    This checks:
+      - URLs are valid http(s) URLs
+      - Hostnames resolve to public IPs
+
+    Logs any invalid entries.
+
+    :param feed_list: List of dicts containing 'name' and 'url' keys
+    :return: List of valid feeds (same dict format)
+    """
+    validated = []
+
+    for feed in feed_list:
+        url = feed.get("url")
+        name = feed.get("name", "Unnamed Feed")
+
+        if not url:
+            logger.warning(f"Feed '{name}' is missing a URL. Skipping.")
+            continue
+
+        if not is_valid_url(url):
+            logger.warning(f"Feed '{name}' has an invalid URL format: {url}. Skipping.")
+            continue
+
+        parsed = urlparse(url)
+        if not is_safe_hostname(parsed.hostname):
+            logger.warning(f"Feed '{name}' resolved to an unsafe hostname: {parsed.hostname}. Skipping.")
+            continue
+
+        # Passed all checks
+        validated.append(feed)
+
+    logger.info(f"Validated {len(validated)} out of {len(feed_list)} feeds.")
+    return validated
 
 
 def process_feeds(feed_results, feeds_list):
